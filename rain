@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# first parameter should be the program to profile
+# the rest of the arguments will be passed to the program
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.
+LD_PRELOAD=`pwd`/librain.so $1 ${@:2}
+
+# This is for counting stack traces:
+#
+# if program successful returned,
+# output count of traces taken for each thread
+#if [ $? -eq 0 ]; then
+#    grep -c ^$ thread*_traces
+#fi
