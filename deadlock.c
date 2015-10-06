@@ -1,5 +1,5 @@
 /*
- * A program with a load imbalance
+ * A program that (should) deadlock
  */
 
 #include <pthread.h>
