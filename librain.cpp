@@ -28,12 +28,13 @@ typedef struct RegSet {
 static unsigned int activeThreadCount = 0;      // how many threads are actually running
 static unsigned int totalThreadCount = 0;       // total threads that ran at once (max active)
 static std::vector<pthread_t *> clientThreads;  // access to client's threads
-static std::vector<std::string> threadStacks;   // storage for stack traces
+//static std::vector<std::string> threadStacks;   // storage for stack traces
 static std::vector<sig_atomic_t> sigCounts;     // count of signals thread receives
 static std::vector<RegSet> lastRegSet;          // set of registers for each thread at last profile interval
 
-static std::unordered_map<pthread_mutex_t *, int> lockHolders;          // map of mutexes to the thread id holding the lock
-static std::vector<std::unordered_set<pthread_mutex_t *>> threadWaiters;// set of locks each thread is waiting to acquire
+// data structures maintained for deadlock detection
+static std::unordered_map<pthread_mutex_t *, int> lockHolders;          // map of mutexes to the thread id holding the mutex lock
+static std::unordered_map<int, pthread_mutex_t *> threadWaiters;        // map of thread ids to the mutex it is waiting to acquire (if any)
 
 static std::atomic_flag real_pthread_initialized = ATOMIC_FLAG_INIT;    // pthread functions initialized?
 static pthread_mutex_t thread_lock = PTHREAD_MUTEX_INITIALIZER;         // lock for thread create/join
@@ -82,8 +83,8 @@ static void sigusr1_handler(int sig_nr, siginfo_t* info, void *context) {
     threadStacks[t] += trace;
     */
 
-    // TODO: instead of just counting signals received by a thread
-    // also check current program counter to see if it has changed from last check
+    // instead of just counting signals received by a thread, also check
+    // current register set to see if it has changed from last check
     // (so we can get some idea of whether or not thread has actually done work)
     bool regChanged = false;
     ucontext_t *ucontext = (ucontext_t*)context;
@@ -103,7 +104,6 @@ static void begin() {
     totalThreadCount = 0;
     clientThreads.clear();
     //threadStacks.clear();
-    threadWaiters.clear();
     sigCounts.clear();
     lastRegSet.clear();
 
@@ -228,7 +228,6 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     //threadStacks.push_back("");
     sigCounts.push_back(0);
     clientThreads.push_back(thread);
-    threadWaiters.push_back(std::unordered_set<pthread_mutex_t *>());
     ++totalThreadCount;
     int ret = real_pthread_create(thread, attr, start_routine, arg);
 
@@ -256,7 +255,7 @@ int pthread_join(pthread_t thread, void **value_ptr) {
     return ret;
 }
 
-void pthread_exit(void *value_ptr) {    // TODO this function has not been tested
+void pthread_exit(void *value_ptr) {    // TODO this function has not been (well) tested
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
@@ -275,12 +274,7 @@ void pthread_exit(void *value_ptr) {    // TODO this function has not been teste
     real_pthread_exit(value_ptr);
 }
 
-static bool deadlockDetectRecur(int thread, pthread_mutex_t *mutex) {
-
-}
-
-// returns 1 if given thread trying to acquire given mutex creates a deadlock, else 0
-static bool deadlockDetect(int thread, pthread_mutex_t *mutex) {
+static bool deadlockDetectRecur(int thread, pthread_mutex_t *mutex, int threadRequesting) {
     if (lockHolders.count(mutex) == 0) {
         return 0;   // no thread currently holding this lock
     }
@@ -288,18 +282,20 @@ static bool deadlockDetect(int thread, pthread_mutex_t *mutex) {
     if (holder < 0) {
         return 0;   // no thread currently holding this lock
     }
-
-    for (const auto &mutex : threadWaiters[holder]) {
-        if (lockHolders.count(mutex) && lockHolders[mutex] == thread) {
-            return 1;
-        }
+    if (holder == threadRequesting) {
+        return 1;   // cycle detected
     }
-    // TODO this needs to continue recursively
 
-    return 0;
+    if (threadWaiters.count(holder) == 0) {
+        return 0;   // holder is not waiting on any locks
+    }
+    return deadlockDetectRecur(holder, threadWaiters[holder], threadRequesting);
 }
-//static std::unordered_map<pthread_mutex_t *, int> lockHolders;          // map of locks to the holding thread id
-//static std::vector<std::unordered_set<pthread_mutex_t *>> threadWaiters;  // set of locks each thread is waiting to acquire
+
+// returns 1 if given thread trying to acquire given mutex creates a deadlock, else 0
+static bool deadlockDetect(int thread, pthread_mutex_t *mutex) {
+    return deadlockDetectRecur(thread, mutex, thread);
+}
 
 int pthread_mutex_lock(pthread_mutex_t *mutex) {
     if (!real_pthread_initialized.test_and_set()) {
@@ -319,9 +315,9 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         lockHolders[mutex] = t;
     } else {
         // mutex not acquired
-        threadWaiters[t].insert(mutex);
+        threadWaiters[t] = mutex;
         if (deadlockDetect(t, mutex)) {
-            // TODO slight chance that a deadlock will not actually occur?
+            // TODO slight chance that a deadlock will not actually occur,
             // possible to check here, but it is released before the actual lock attempt
             // although, the deadlock chance still exists, so not necessarily bad to print error
             printf("DEADLOCK DETECTED\n");
@@ -331,34 +327,15 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         ret = real_pthread_mutex_lock(mutex);
         real_pthread_mutex_lock(&mutex_lock);
         lockHolders[mutex] = t;
-        threadWaiters[t].erase(mutex);
+        threadWaiters.erase(t);
     }
-    /*
-    threadWaiters[t].insert(mutex);
-    if (deadlockDetect(t, mutex)) {
-        // TODO slight chance that a deadlock will not actually occur?
-        // possible to check here, but it is released before the actual lock attempt
-        // although, the deadlock chance still exists, so not necessarily bad to print error
-        printf("DEADLOCK DETECTED\n");
-        // TODO maybe do a stack trace and quit?
-    }
-    real_pthread_mutex_unlock(&mutex_lock);
-
-    int ret = real_pthread_mutex_lock(mutex);
-
-    real_pthread_mutex_lock(&mutex_lock);
-    lockHolders[mutex] = t;
-    threadWaiters[t].erase(mutex);
-    printf("thread %d acquired lock %d\n", t, mutex);
-    */
     real_pthread_mutex_unlock(&mutex_lock);
     return ret;
 }
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
     if (!real_pthread_initialized.test_and_set()) {
-        init_real_pthreads();
-    }
+        init_real_pthreads(); }
     real_pthread_mutex_lock(&mutex_lock);
     unsigned int t;
     for (t = 0; t < totalThreadCount; ++t) {
