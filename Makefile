@@ -45,7 +45,7 @@ librain.so: librain.cpp
 	g++ -std=c++0x -Wall -shared -fPIC librain.cpp -o librain.so -ldl -pthread
 
 clean:
-	rm -f many_threads_unbalanced many_threads_unbalanced.o inbalanced_sum inbalanced_sum.o deadlock deadlock.o librain.so
+	rm -f many_threads_unbalanced many_threads_unbalanced.o inbalanced_sum inbalanced_sum.o deadlock deadlock.o deadlock2 deadlock2.o self_deadlock self_deadlock.o librain.so
 
 new:
 	make clean
