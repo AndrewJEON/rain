@@ -26,6 +26,7 @@ pthread_t thread1, thread2;
 const int WORKER_COUNT = 10;
 pthread_t threads[WORKER_COUNT];
 Worker workers[WORKER_COUNT];
+Group groupOne, groupTwo;
 
 void *work(void *arg) {
     Worker *w = (Worker*)arg;
@@ -45,10 +46,9 @@ void *work(void *arg) {
 }
 
 void *makeWorkers(void *arg) {
-    int ret;
     Group *g = (Group*)arg;
     for (int i = g->startIndex; i <= g->endIndex; i++) {
-        ret = pthread_create(&threads[i], 0, work, &workers[i]);
+        int ret = pthread_create(&threads[i], 0, work, &workers[i]);
         if (ret) {
             fprintf(stderr, "pthread_create, error: %d\n", ret);
             return arg;
@@ -56,7 +56,7 @@ void *makeWorkers(void *arg) {
     }
 
     for (int i = g->startIndex; i <= g->endIndex; i++) {
-        ret = pthread_join(threads[i], 0);
+        int ret = pthread_join(threads[i], 0);
         if (ret) {
             fprintf(stderr, "pthread_join, error: %d\n", ret);
             return arg;
@@ -69,7 +69,6 @@ int main(int argc, char *argv[]) {
     int ret;
     srand(time(NULL));
 
-    Group groupOne, groupTwo;
     groupOne.startIndex = 0;
     groupOne.endIndex = (WORKER_COUNT / 2.0 - 0.5);
     groupTwo.startIndex = groupOne.endIndex + 1;
