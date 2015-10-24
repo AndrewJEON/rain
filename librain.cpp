@@ -41,14 +41,13 @@ static std::unordered_map<int, pthread_mutex_t *> threadWaiters;        // map o
 static std::unordered_map<pthread_mutex_t *, int> contention;
 
 static std::atomic_flag real_pthread_initialized = ATOMIC_FLAG_INIT;    // pthread functions initialized?
-static pthread_mutex_t thread_lock = PTHREAD_MUTEX_INITIALIZER;         // lock for thread create/join
-static pthread_mutex_t mutex_lock = PTHREAD_MUTEX_INITIALIZER;          // lock for mutex lock/unlock
+static pthread_mutex_t rain_lock = PTHREAD_MUTEX_INITIALIZER;         // lock for internal operations
 
 // need to be able to call the actual pthread library functions
 static int (*real_pthread_create)(pthread_t*, const pthread_attr_t*, 
             void *(*)(void*), void*) = NULL;
 static int (*real_pthread_join)(pthread_t, void **) = NULL;
-static void (*real_pthread_exit)(void *) = NULL;
+static void (*real_pthread_exit)(void *) __attribute__((noreturn)) = NULL;
 //static int (*real_pthread_mutex_init)(pthread_mutex_t*, const pthread_mutexattr_t*) = NULL;
 static int (*real_pthread_mutex_lock)(pthread_mutex_t*) = NULL;
 static int (*real_pthread_mutex_unlock)(pthread_mutex_t*) = NULL;
@@ -209,7 +208,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
         init_real_pthreads();
     }
     // lock this all up in case of threads creating threads
-    int res = real_pthread_mutex_lock(&thread_lock);
+    int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
         // if unable to lock, try not to disrupt host program
         fprintf(stderr, "ERROR: RAIN: pthread_create: could not lock thread: %d\n", res);
@@ -227,9 +226,9 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     //threadStacks.push_back("");
     sigCounts.push_back(0);
 
-    res = real_pthread_mutex_unlock(&thread_lock);
+    res = real_pthread_mutex_unlock(&rain_lock);
     if (res) {
-        // looking at man pages, this would mean thread_lock did not own this lock somehow
+        // looking at man pages, this would mean rain_lock did not own this lock somehow
         // (otherwise the error would have happened above at real_pthread_mutex_lock)
         fprintf(stderr, "ERROR: RAIN: pthread_create: could not unlock thread: %d\n", res);
     }
@@ -241,7 +240,7 @@ int pthread_join(pthread_t thread, void **value_ptr) {
         init_real_pthreads();
     }
     int ret = real_pthread_join(thread, value_ptr);
-    int res = real_pthread_mutex_lock(&thread_lock);
+    int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
         // if unable to lock, just try not to disrupt host program
         fprintf(stderr, "ERROR: RAIN: pthread_join: could not lock thread: %d\n", res);
@@ -257,9 +256,9 @@ int pthread_join(pthread_t thread, void **value_ptr) {
     if (--activeThreadCount == 0) {
         finish();    // last thread, cleanup, output traces
     }
-    res = real_pthread_mutex_unlock(&thread_lock);
+    res = real_pthread_mutex_unlock(&rain_lock);
     if (res) {
-        // likely means thread_lock does not own the mutex somehow
+        // likely means rain_lock does not own the mutex somehow
         fprintf(stderr, "ERROR: RAIN: pthread_join: could not unlock thread: %d\n", res);
     }
     return ret;
@@ -269,11 +268,11 @@ void pthread_exit(void *value_ptr) {    // TODO this function has not been (well
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
-    int res = real_pthread_mutex_lock(&thread_lock);
+    int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
         // if unable to lock, just try not to disrupt host program
         fprintf(stderr, "ERROR: RAIN: pthread_exit: could not lock thread: %d\n", res);
-        return;
+        real_pthread_exit(value_ptr);
     }
     unsigned int t;
     for (t = 0; t < totalThreadCount; ++t) {
@@ -285,9 +284,9 @@ void pthread_exit(void *value_ptr) {    // TODO this function has not been (well
     if (--activeThreadCount == 0) {
         finish();    // last thread, cleanup, output traces
     }
-    res = real_pthread_mutex_unlock(&thread_lock);
+    res = real_pthread_mutex_unlock(&rain_lock);
     if (res) {
-        // likely means thread_lock does not own the mutex somehow
+        // likely means rain_lock does not own the mutex somehow
         fprintf(stderr, "ERROR: RAIN: pthread_exit: could not unlock thread: %d\n", res);
     }
     real_pthread_exit(value_ptr);
@@ -298,11 +297,11 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) 
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
-    real_pthread_mutex_lock(&mutex_lock);
+    real_pthread_mutex_lock(&rain_lock);
     static const pthread_mutex_t temp = PTHREAD_MUTEX_INITIALIZER;
     memcpy(mutex, &temp, sizeof(pthread_mutex_t));
     contention[mutex] = 0;
-    real_pthread_mutex_unlock(&mutex_lock);
+    real_pthread_mutex_unlock(&rain_lock);
     return 0;
 }
 */
@@ -334,7 +333,7 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
-    int res = real_pthread_mutex_lock(&mutex_lock);
+    int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
         // if unable to lock, just try not to disrupt host program
         fprintf(stderr, "ERROR: RAIN: pthread_mutex_lock: could not lock thread: %d\n", res);
@@ -363,13 +362,13 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
             printf("DEADLOCK DETECTED\n");
             // TODO maybe do a stack trace and quit?
         }
-        res = real_pthread_mutex_unlock(&mutex_lock);
+        res = real_pthread_mutex_unlock(&rain_lock);
         if (res) {
             // likely means mutex_lock does not own the mutex somehow
             fprintf(stderr, "ERROR: RAIN: pthread_mutex_lock: could not unlock thread: %d\n", res);
         }
         ret = real_pthread_mutex_lock(mutex);
-        res = real_pthread_mutex_lock(&mutex_lock);
+        res = real_pthread_mutex_lock(&rain_lock);
         if (res) {
             // if unable to lock, just try not to disrupt host program
             fprintf(stderr, "ERROR: RAIN: pthread_mutex_lock: could not lock thread: %d\n", res);
@@ -378,7 +377,7 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         lockHolders[mutex] = t;
         threadWaiters.erase(t);
     }
-    res = real_pthread_mutex_unlock(&mutex_lock);
+    res = real_pthread_mutex_unlock(&rain_lock);
     if (res) {
         // likely means mutex_lock does not own the mutex somehow
         fprintf(stderr, "ERROR: RAIN: pthread_mutex_lock: could not unlock thread: %d\n", res);
@@ -390,7 +389,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
-    int res = real_pthread_mutex_lock(&mutex_lock);
+    int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
         // if unable to lock, just try not to disrupt host program
         fprintf(stderr, "ERROR: RAIN: pthread_mutex_unlock: could not lock thread: %d\n", res);
@@ -406,7 +405,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
     int ret = real_pthread_mutex_unlock(mutex);
     lockHolders[mutex] = -1;
     //printf("thread %d released lock %d\n", t, mutex);
-    real_pthread_mutex_unlock(&mutex_lock);
+    real_pthread_mutex_unlock(&rain_lock);
     if (res) {
         // likely means mutex_lock does not own the mutex somehow
         fprintf(stderr, "ERROR: RAIN: pthread_mutex_unlock: could not unlock thread: %d\n", res);

@@ -15,9 +15,9 @@ pthread_mutex_t lock1, lock2, lock3;
 
 void *workOne(void *arg) {
     pthread_mutex_lock(&lock1);
-    usleep(100);
+    usleep(1000);
     pthread_mutex_lock(&lock2);
-    usleep(100);
+    usleep(1000);
     pthread_mutex_unlock(&lock2);
     pthread_mutex_unlock(&lock1);
     return arg;
@@ -25,9 +25,9 @@ void *workOne(void *arg) {
 
 void *workTwo(void *arg) {
     pthread_mutex_lock(&lock2);
-    usleep(100);
+    usleep(1000);
     pthread_mutex_lock(&lock3);
-    usleep(100);
+    usleep(1000);
     pthread_mutex_unlock(&lock3);
     pthread_mutex_unlock(&lock2);
     return arg;
@@ -35,9 +35,9 @@ void *workTwo(void *arg) {
 
 void *workThree(void *arg) {
     pthread_mutex_lock(&lock3);
-    usleep(100);
+    usleep(1000);
     pthread_mutex_lock(&lock1);
-    usleep(100);
+    usleep(1000);
     pthread_mutex_unlock(&lock1);
     pthread_mutex_unlock(&lock3);
     return arg;
