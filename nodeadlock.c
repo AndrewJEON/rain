@@ -11,7 +11,10 @@
 #include <unistd.h>
 
 pthread_t thread1, thread2;
-pthread_mutex_t lock1, lock2;
+//pthread_mutex_t lock1, lock2;
+static pthread_mutex_t lock1 = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t lock2 = PTHREAD_MUTEX_INITIALIZER;
+//static pthread_mutex_t lock3 = PTHREAD_MUTEX_INITIALIZER;
 
 void *workOne(void *arg) {
     pthread_mutex_lock(&lock1);
@@ -37,6 +40,7 @@ void *workTwo(void *arg) {
 int main(int argc, char *argv[]) {
     int ret;
 
+    /*
     ret = pthread_mutex_init(&lock1, 0);
     if (ret) {
         fprintf(stderr, "pthread_mutex_init, error: %d\n", ret);
@@ -47,6 +51,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "pthread_mutex_init, error: %d\n", ret);
         return ret;
     }
+    */
 
     ret = pthread_create(&thread1, 0, workOne, 0);
     if (ret) {
@@ -70,6 +75,7 @@ int main(int argc, char *argv[]) {
         return ret;
     }
 
+    /*
     ret = pthread_mutex_destroy(&lock2);
     if (ret) {
         fprintf(stderr, "pthread_mutex_destroy, error: %d\n", ret);
@@ -80,5 +86,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "pthread_mutex_destroy, error: %d\n", ret);
         return ret;
     }
+    */
     return 0;
 }

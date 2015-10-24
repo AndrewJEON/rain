@@ -44,6 +44,41 @@ static std::atomic_flag real_pthread_initialized = ATOMIC_FLAG_INIT;    // pthre
 static pthread_mutex_t thread_lock = PTHREAD_MUTEX_INITIALIZER;         // lock for thread create/join
 static pthread_mutex_t mutex_lock = PTHREAD_MUTEX_INITIALIZER;          // lock for mutex lock/unlock
 
+// need to be able to call the actual pthread library functions
+static int (*real_pthread_create)(pthread_t*, const pthread_attr_t*, 
+            void *(*)(void*), void*) = NULL;
+static int (*real_pthread_join)(pthread_t, void **) = NULL;
+static void (*real_pthread_exit)(void *) = NULL;
+//static int (*real_pthread_mutex_init)(pthread_mutex_t*, const pthread_mutexattr_t*) = NULL;
+static int (*real_pthread_mutex_lock)(pthread_mutex_t*) = NULL;
+static int (*real_pthread_mutex_unlock)(pthread_mutex_t*) = NULL;
+
+#define WRAP_FUNCTION(FUN_NAME)                                                         \
+    do {                                                                                \
+        /* c++ doesn't support casting void pointers to function pointers, workaround:*/\
+        /* http://stackoverflow.com/questions/1096341/function-pointers-casting-in-c*/  \
+        static_assert(sizeof(real_##FUN_NAME), "pointer cast impossible");              \
+        *reinterpret_cast<void**>(&real_##FUN_NAME) = dlsym(RTLD_NEXT, #FUN_NAME);      \
+        if (real_##FUN_NAME == NULL) {                                                  \
+            fprintf(stderr, "ERROR: RAIN: #FUN_NAME, dlsym: %s\n", dlerror());          \
+        }                                                                               \
+    } while (0)
+
+static void init_real_pthreads() {
+    // initialize real pthread function pointers
+    WRAP_FUNCTION(pthread_create);
+    WRAP_FUNCTION(pthread_join);
+    WRAP_FUNCTION(pthread_exit);
+    //WRAP_FUNCTION(pthread_mutex_init);
+    WRAP_FUNCTION(pthread_mutex_lock);
+    WRAP_FUNCTION(pthread_mutex_unlock);
+
+    // gcc 4.9 has a bug with unordered_map that causes a floating point exception
+    // reserve here as a workaround to prevent it
+    // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61143
+    lockHolders.reserve(1);
+}
+
 static void sigprof_handler(int sig_nr, siginfo_t* info, void *context) {
     /*
     // to block SIGPROF while handling it:
@@ -151,6 +186,9 @@ static void finish() {
     for (unsigned int t = 0; t < sigCounts.size(); t++) {
         printf("thread %d sigcount %d\n", t, sigCounts[t]);
     }
+    for (auto kv : contention) {
+        printf("mutex %p contention: %d\n", kv.first, kv.second);
+    }
 
     /*
     FILE *fp;
@@ -162,75 +200,6 @@ static void finish() {
         fclose(fp);
     }
     */
-}
-
-// need to be able to call the actual pthread library functions
-static int (*real_pthread_create)(pthread_t*, const pthread_attr_t*, 
-            void *(*)(void*), void*) = NULL;
-static int (*real_pthread_join)(pthread_t, void **) = NULL;
-static void (*real_pthread_exit)(void *) = NULL;
-static int (*real_pthread_mutex_init)(pthread_mutex_t*, const pthread_mutexattr_t*) = NULL;
-static int (*real_pthread_mutex_lock)(pthread_mutex_t*) = NULL;
-static int (*real_pthread_mutex_unlock)(pthread_mutex_t*) = NULL;
-
-static void pthread_create_init() {
-    // c++ doesn't support casting void pointers to function pointers, workaround:
-    // http://stackoverflow.com/questions/1096341/function-pointers-casting-in-c
-    static_assert(sizeof(void *) == sizeof(real_pthread_create), "pointer cast impossible");
-    *reinterpret_cast<void**>(&real_pthread_create) = dlsym(RTLD_NEXT, "pthread_create");
-    if (real_pthread_create == NULL) {
-        fprintf(stderr, "ERROR: RAIN: pthread_create, dlsym: %s\n", dlerror());
-    }
-}
-
-static void pthread_join_init() {
-    static_assert(sizeof(void *) == sizeof(real_pthread_join), "pointer cast impossible");
-    *reinterpret_cast<void**>(&real_pthread_join) = dlsym(RTLD_NEXT, "pthread_join");
-    if (real_pthread_join == NULL) {
-        fprintf(stderr, "ERROR: RAIN: pthread_join, dlsym: %s\n", dlerror());
-    }
-}
-
-static void pthread_exit_init() {
-    static_assert(sizeof(void *) == sizeof(real_pthread_exit), "pointer cast impossible");
-    *reinterpret_cast<void**>(&real_pthread_exit) = dlsym(RTLD_NEXT, "pthread_exit");
-    if (real_pthread_exit == NULL) {
-        fprintf(stderr, "ERROR: RAIN: pthread_exit, dlsym: %s\n", dlerror());
-    }
-}
-
-static void pthread_mutex_init_init() {
-    static_assert(sizeof(void *) == sizeof(real_pthread_mutex_init), "pointer cast impossible");
-    *reinterpret_cast<void**>(&real_pthread_mutex_init) = dlsym(RTLD_NEXT, "pthread_mutex_lock");
-    if (real_pthread_mutex_init == NULL) {
-        fprintf(stderr, "ERROR: RAIN: pthread_mutex_init, dlsym: %s\n", dlerror());
-    }
-}
-
-static void pthread_mutex_lock_init() {
-    static_assert(sizeof(void *) == sizeof(real_pthread_mutex_lock), "pointer cast impossible");
-    *reinterpret_cast<void**>(&real_pthread_mutex_lock) = dlsym(RTLD_NEXT, "pthread_mutex_lock");
-    if (real_pthread_mutex_lock == NULL) {
-        fprintf(stderr, "ERROR: RAIN: pthread_mutex_lock, dlsym: %s\n", dlerror());
-    }
-}
-
-static void pthread_mutex_unlock_init() {
-    static_assert(sizeof(void *) == sizeof(real_pthread_mutex_unlock), "pointer cast impossible");
-    *reinterpret_cast<void**>(&real_pthread_mutex_unlock) = dlsym(RTLD_NEXT, "pthread_mutex_unlock");
-    if (real_pthread_mutex_unlock == NULL) {
-        fprintf(stderr, "ERROR: RAIN: pthread_mutex_unlock, dlsym: %s\n", dlerror());
-    }
-}
-
-static void init_real_pthreads() {
-    // initialize real pthread function pointers
-    pthread_create_init();
-    pthread_join_init();
-    pthread_exit_init();
-    pthread_mutex_init_init();
-    pthread_mutex_lock_init();
-    pthread_mutex_unlock_init();
 }
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr, 
@@ -324,15 +293,19 @@ void pthread_exit(void *value_ptr) {    // TODO this function has not been (well
     real_pthread_exit(value_ptr);
 }
 
+/*
 int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
+    real_pthread_mutex_lock(&mutex_lock);
     static const pthread_mutex_t temp = PTHREAD_MUTEX_INITIALIZER;
     memcpy(mutex, &temp, sizeof(pthread_mutex_t));
     contention[mutex] = 0;
+    real_pthread_mutex_unlock(&mutex_lock);
     return 0;
 }
+*/
 
 static bool deadlockDetectRecur(int thread, pthread_mutex_t *mutex, int threadRequesting) {
     if (lockHolders.count(mutex) == 0) {
@@ -381,6 +354,7 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         lockHolders[mutex] = t;
     } else {
         // mutex not acquired
+        ++contention[mutex];
         threadWaiters[t] = mutex;
         if (deadlockDetect(t, mutex)) {
             // TODO slight chance that a deadlock will not actually occur,

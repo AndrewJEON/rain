@@ -9,7 +9,7 @@ SRCDIR = ./src/
 SOURCES = $(shell ls $(SRCDIR)*.c)
 OBJECTS = $(SOURCES:$(SRCDIR)%.c=$(ODIR)%.o)
 
-all: librain.so many_threads_unbalanced inbalanced_sum deadlock deadlock2 self_deadlock
+all: librain.so many_threads_unbalanced inbalanced_sum deadlock deadlock2 self_deadlock nodeadlock
 
 many_threads_unbalanced: many_threads_unbalanced.o librain.so
 	$(CMD) $^ -o $@ $(LIBS) $(INCLUDE)
@@ -41,11 +41,17 @@ self_deadlock: self_deadlock.o librain.so
 self_deadlock.o: self_deadlock.c
 	$(CMD) -c $< -o $@ $(LIBS) $(INCLUDE)
 
+nodeadlock: nodeadlock.o librain.so
+	$(CMD) $^ -o $@ $(LIBS) $(INCLUDE)
+
+nodeadlock.o: nodeadlock.c
+	$(CMD) -c $< -o $@ $(LIBS) $(INCLUDE)
+
 librain.so: librain.cpp
 	g++ -std=c++0x -Wall -shared -fPIC librain.cpp -o librain.so -ldl -pthread
 
 clean:
-	rm -f many_threads_unbalanced many_threads_unbalanced.o inbalanced_sum inbalanced_sum.o deadlock deadlock.o deadlock2 deadlock2.o self_deadlock self_deadlock.o librain.so
+	rm -f many_threads_unbalanced many_threads_unbalanced.o inbalanced_sum inbalanced_sum.o deadlock deadlock.o deadlock2 deadlock2.o self_deadlock self_deadlock.o nodeadlock.o librain.so
 
 new:
 	make clean
