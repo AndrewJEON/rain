@@ -29,7 +29,6 @@ typedef struct RegSet {
 static unsigned int activeThreadCount = 0;      // how many threads are actually running
 static unsigned int totalThreadCount = 0;       // total threads that ran at once (max active)
 static std::vector<pthread_t *> clientThreads;  // access to client's threads
-//static std::vector<std::string> threadStacks;   // storage for stack traces
 static std::vector<sig_atomic_t> sigCounts;     // count of signals thread receives
 static std::vector<RegSet> lastRegSet;          // set of registers for each thread at last profile interval
 
@@ -37,8 +36,19 @@ static std::vector<RegSet> lastRegSet;          // set of registers for each thr
 static std::unordered_map<pthread_mutex_t *, int> lockHolders;          // map of mutexes to the thread id holding the mutex lock
 static std::unordered_map<int, pthread_mutex_t *> threadWaiters;        // map of thread ids to the mutex it is waiting to acquire (if any)
 
+typedef struct MutexData {
+    int lockCount;
+    int contention;
+
+    uint64_t lockTimeStamp;
+    uint64_t lockTimeTotal;
+} MutexData;
+
 // map mutexes to count of times they were already held when another thread tried to acquire them
-static std::unordered_map<pthread_mutex_t *, int> contention;
+static std::unordered_map<pthread_mutex_t *, MutexData> mutexData;
+
+// per-thread flag to disable some aspects of profiler
+static __thread bool disableRain = false;
 
 static std::atomic_flag real_pthread_initialized = ATOMIC_FLAG_INIT;    // pthread functions initialized?
 static pthread_mutex_t rain_lock = PTHREAD_MUTEX_INITIALIZER;         // lock for internal operations
@@ -48,7 +58,6 @@ static int (*real_pthread_create)(pthread_t*, const pthread_attr_t*,
             void *(*)(void*), void*) = NULL;
 static int (*real_pthread_join)(pthread_t, void **) = NULL;
 static void (*real_pthread_exit)(void *) __attribute__((noreturn)) = NULL;
-//static int (*real_pthread_mutex_init)(pthread_mutex_t*, const pthread_mutexattr_t*) = NULL;
 static int (*real_pthread_mutex_lock)(pthread_mutex_t*) = NULL;
 static int (*real_pthread_mutex_unlock)(pthread_mutex_t*) = NULL;
 
@@ -63,12 +72,41 @@ static int (*real_pthread_mutex_unlock)(pthread_mutex_t*) = NULL;
         }                                                                               \
     } while (0)
 
+static uint64_t timeNow() {
+    struct timespec t;
+    int res = clock_gettime(CLOCK_MONOTONIC, &t);
+    if (res) {
+        fprintf(stderr, "ERROR: RAIN: clock_gettime, %d\n", res);
+        return 0;
+    }
+    return t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
+static void printBacktrace() {
+    /* glibc specific backtrace functions for stack traces
+     * backtrace_symbols requires client programs to be compiled with -rdynamic
+     * however, if they aren't it just won't give function names and still works gracefully
+     */
+
+    /* backtrace uses a mutex, so we need to disable some wrappers temporarily */
+    disableRain = true;
+
+    /* gnu.org: 200 possible entries should probably cover all programs */
+    static const int NUM_RET_ADDR = 200;
+    void *callstack[NUM_RET_ADDR];
+    int i, frames = backtrace(callstack, NUM_RET_ADDR);
+    char **strs = backtrace_symbols(callstack, frames);
+    for (i = 0; i < frames; ++i) {
+        printf("%s\n", strs[i]);
+    }
+    disableRain = false;
+}
+
 static void init_real_pthreads() {
     // initialize real pthread function pointers
     WRAP_FUNCTION(pthread_create);
     WRAP_FUNCTION(pthread_join);
     WRAP_FUNCTION(pthread_exit);
-    //WRAP_FUNCTION(pthread_mutex_init);
     WRAP_FUNCTION(pthread_mutex_lock);
     WRAP_FUNCTION(pthread_mutex_unlock);
 
@@ -76,6 +114,8 @@ static void init_real_pthreads() {
     // reserve here as a workaround to prevent it
     // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61143
     lockHolders.reserve(1);
+    threadWaiters.reserve(1);
+    mutexData.reserve(1);
 }
 
 static void sigprof_handler(int sig_nr, siginfo_t* info, void *context) {
@@ -110,22 +150,6 @@ static void sigprof_handler(int sig_nr, siginfo_t* info, void *context) {
 static void sigusr1_handler(int sig_nr, siginfo_t* info, void *context) {
     unsigned int t = info->si_value.sival_int;
 
-    /*
-    // TODO: this is temporary, gcc backtrace stuff needs the -rdynamic
-    // compile flag, which means client programs have to be recompiled and
-    // there are issues with thread/signal safety I don't know if I can get around
-    static const int NUM_RET_ADDR = 200;    // gnu.org: 200 possible entries should
-                                            // probably cover all programs
-    void *callstack[NUM_RET_ADDR];
-    int i, frames = backtrace(callstack, NUM_RET_ADDR);
-    char **strs = backtrace_symbols(callstack, frames);
-    std::string trace = "\n";
-    for (i = 0; i < frames; ++i) {
-        trace += strs[i] + std::string("\n");
-    }
-    threadStacks[t] += trace;
-    */
-
     // instead of just counting signals received by a thread, also check
     // current register set to see if it has changed from last check
     // (so we can get some idea of whether or not thread has actually done work)
@@ -146,7 +170,6 @@ static void sigusr1_handler(int sig_nr, siginfo_t* info, void *context) {
 static void begin() {
     totalThreadCount = 0;
     clientThreads.clear();
-    //threadStacks.clear();
     sigCounts.clear();
     lastRegSet.clear();
 
@@ -185,20 +208,13 @@ static void finish() {
     for (unsigned int t = 0; t < sigCounts.size(); t++) {
         printf("thread %d sigcount %d\n", t, sigCounts[t]);
     }
-    for (auto kv : contention) {
-        printf("mutex %p contention: %d\n", kv.first, kv.second);
+    if (mutexData.size()) {
+        printf("%lu mutexes used\n", mutexData.size());
+        printf("Mutex\t\tLocked\tContention\tTotal Time (ms)\n");
+        for (auto kv : mutexData) {
+            printf("%p\t%d\t%d\t\t%.4f\n", kv.first, kv.second.lockCount, kv.second.contention, kv.second.lockTimeTotal / 1000000.0);
+        }
     }
-
-    /*
-    FILE *fp;
-    std::string fileName;
-    for (unsigned int t = 0; t < threadStacks.size(); t++) {
-        fileName = "thread" + std::to_string(t) + "_traces";
-        fp = fopen(fileName.c_str(), "w");
-        fprintf(fp, threadStacks[t].c_str());
-        fclose(fp);
-    }
-    */
 }
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr, 
@@ -223,7 +239,6 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 
     RegSet initRegSet;
     lastRegSet.push_back(initRegSet);
-    //threadStacks.push_back("");
     sigCounts.push_back(0);
 
     res = real_pthread_mutex_unlock(&rain_lock);
@@ -292,20 +307,6 @@ void pthread_exit(void *value_ptr) {    // TODO this function has not been (well
     real_pthread_exit(value_ptr);
 }
 
-/*
-int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) {
-    if (!real_pthread_initialized.test_and_set()) {
-        init_real_pthreads();
-    }
-    real_pthread_mutex_lock(&rain_lock);
-    static const pthread_mutex_t temp = PTHREAD_MUTEX_INITIALIZER;
-    memcpy(mutex, &temp, sizeof(pthread_mutex_t));
-    contention[mutex] = 0;
-    real_pthread_mutex_unlock(&rain_lock);
-    return 0;
-}
-*/
-
 static bool deadlockDetectRecur(int thread, pthread_mutex_t *mutex, int threadRequesting) {
     if (lockHolders.count(mutex) == 0) {
         return 0;   // no thread currently holding this lock
@@ -333,6 +334,9 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
+    if (disableRain) {
+        return real_pthread_mutex_lock(mutex);
+    }
     int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
         // if unable to lock, just try not to disrupt host program
@@ -351,16 +355,19 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
     if (!pthread_mutex_trylock(mutex)) {
         // mutex acquired
         lockHolders[mutex] = t;
+        ++mutexData[mutex].lockCount;
+        mutexData[mutex].lockTimeStamp = timeNow();
     } else {
         // mutex not acquired
-        ++contention[mutex];
+        ++mutexData[mutex].contention;
         threadWaiters[t] = mutex;
         if (deadlockDetect(t, mutex)) {
             // TODO slight chance that a deadlock will not actually occur,
             // possible to check here, but it is released before the actual lock attempt
             // although, the deadlock chance still exists, so not necessarily bad to print error
             printf("DEADLOCK DETECTED\n");
-            // TODO maybe do a stack trace and quit?
+            printf("mutex %p, thread %d, %p\n", mutex, t, clientThreads[t]);
+            printBacktrace();
         }
         res = real_pthread_mutex_unlock(&rain_lock);
         if (res) {
@@ -375,6 +382,8 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
             return ret;
         }
         lockHolders[mutex] = t;
+        ++mutexData[mutex].lockCount;
+        mutexData[mutex].lockTimeStamp = timeNow();
         threadWaiters.erase(t);
     }
     res = real_pthread_mutex_unlock(&rain_lock);
@@ -388,6 +397,9 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
+    }
+    if (disableRain) {
+        return real_pthread_mutex_unlock(mutex);
     }
     int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
@@ -404,7 +416,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
     }
     int ret = real_pthread_mutex_unlock(mutex);
     lockHolders[mutex] = -1;
-    //printf("thread %d released lock %d\n", t, mutex);
+    mutexData[mutex].lockTimeTotal += timeNow() - mutexData[mutex].lockTimeStamp;
     real_pthread_mutex_unlock(&rain_lock);
     if (res) {
         // likely means mutex_lock does not own the mutex somehow

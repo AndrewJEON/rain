@@ -15,7 +15,7 @@ pthread_mutex_t lock1, lock2;
 
 void *workOne(void *arg) {
     pthread_mutex_lock(&lock1);
-    usleep(100);
+    usleep(1000);
     pthread_mutex_lock(&lock2);
     pthread_mutex_unlock(&lock2);
     pthread_mutex_unlock(&lock1);
@@ -24,7 +24,7 @@ void *workOne(void *arg) {
 
 void *workTwo(void *arg) {
     pthread_mutex_lock(&lock2);
-    usleep(100);
+    usleep(2000);
     pthread_mutex_lock(&lock1);
     pthread_mutex_unlock(&lock1);
     pthread_mutex_unlock(&lock2);
@@ -44,6 +44,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "pthread_mutex_init, error: %d\n", ret);
         return ret;
     }
+
+    printf("expecting deadlock on mutex %p by thread %p\n\n", &lock1, &thread2);
 
     ret = pthread_create(&thread1, 0, workOne, 0);
     if (ret) {
