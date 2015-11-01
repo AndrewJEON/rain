@@ -7,3 +7,5 @@ librain.cpp contains the profiling code.
 Example runs:  
 ./rain ./inbalanced_sum 4 7  
 ./rain ./many_threads_unbalanced  
+./rain ./deadlock
+./rain ./nodeadlock
