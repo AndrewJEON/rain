@@ -279,30 +279,9 @@ int pthread_join(pthread_t thread, void **value_ptr) {
     return ret;
 }
 
-void pthread_exit(void *value_ptr) {    // TODO this function has not been (well) tested
+void pthread_exit(void *value_ptr) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
-    }
-    int res = real_pthread_mutex_lock(&rain_lock);
-    if (res) {
-        // if unable to lock, just try not to disrupt host program
-        fprintf(stderr, "ERROR: RAIN: pthread_exit: could not lock thread: %d\n", res);
-        real_pthread_exit(value_ptr);
-    }
-    unsigned int t;
-    for (t = 0; t < totalThreadCount; ++t) {
-        if (clientThreads[t] && pthread_equal(*clientThreads[t], pthread_self())) {
-            clientThreads[t] = 0;
-            break;  // found the thread
-        }
-    }
-    if (--activeThreadCount == 0) {
-        finish();    // last thread, cleanup, output traces
-    }
-    res = real_pthread_mutex_unlock(&rain_lock);
-    if (res) {
-        // likely means rain_lock does not own the mutex somehow
-        fprintf(stderr, "ERROR: RAIN: pthread_exit: could not unlock thread: %d\n", res);
     }
     real_pthread_exit(value_ptr);
 }
