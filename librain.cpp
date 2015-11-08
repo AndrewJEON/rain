@@ -1,7 +1,3 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <pthread.h>
 #include <stdio.h>
 #include <signal.h>
@@ -322,14 +318,25 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         fprintf(stderr, "ERROR: RAIN: pthread_mutex_lock: could not lock thread: %d\n", res);
         return real_pthread_mutex_lock(mutex);
     }
+    bool found = false;
     unsigned int t;
-    for (t = 0; t < totalThreadCount; ++t) {
+    for (t = 0; !found && t < totalThreadCount; ++t) {
         if (clientThreads[t] && pthread_equal(*clientThreads[t], pthread_self())) {
-            //printf("thread %d requested lock %d\n", t, mutex);
-            break;
+            found = true;
         }
     }
-    // TODO make sure the thread was found, and if not either initialize it like in pthread_create or report error
+
+    if (!found) {
+        // commented out to prevent some programs from flooding this error
+        //fprintf(stderr, "ERROR: RAIN: pthread_mutex_lock: requesting thread not found, %p\n");
+        res = real_pthread_mutex_unlock(&rain_lock);
+        if (res) {
+            // likely means mutex_lock does not own the mutex somehow
+            fprintf(stderr, "ERROR: RAIN: pthread_mutex_lock: could not unlock thread: %d\n", res);
+        }
+        return real_pthread_mutex_lock(mutex);
+    }
+
     int ret = 0;
     if (!pthread_mutex_trylock(mutex)) {
         // mutex acquired
@@ -385,13 +392,6 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
         // if unable to lock, just try not to disrupt host program
         fprintf(stderr, "ERROR: RAIN: pthread_mutex_unlock: could not lock thread: %d\n", res);
         return real_pthread_mutex_unlock(mutex);
-    }
-    unsigned int t;
-    for (t = 0; t < totalThreadCount; ++t) {
-        if (clientThreads[t] && pthread_equal(*clientThreads[t], pthread_self())) {
-            //printf("thread %d releasing lock %d\n", t, mutex);
-            break;
-        }
     }
     int ret = real_pthread_mutex_unlock(mutex);
     lockHolders[mutex] = -1;
