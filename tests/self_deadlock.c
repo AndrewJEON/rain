@@ -1,5 +1,5 @@
 /*
- * A program that (should) deadlock
+ * A program that will (probably) deadlock
  */
 
 #include <pthread.h>
@@ -21,7 +21,7 @@ void *workOne(void *arg) {
     return arg;
 }
 
-int main(int argc, char *argv[]) {
+int main() {
     int ret;
 
     ret = pthread_mutex_init(&lock1, 0);

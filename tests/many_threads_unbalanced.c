@@ -65,7 +65,7 @@ void *makeWorkers(void *arg) {
     return arg;
 }
 
-int main(int argc, char *argv[]) {
+int main() {
     int ret;
     srand(time(NULL));
 

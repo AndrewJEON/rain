@@ -1,5 +1,5 @@
 /*
- * A program that (should) deadlock
+ * A program that will (probably) deadlock
  */
 
 #include <pthread.h>
@@ -15,7 +15,7 @@ pthread_mutex_t lock1, lock2;
 
 void *workOne(void *arg) {
     pthread_mutex_lock(&lock1);
-    usleep(1000);
+    usleep(1000);   // give thread2 time to acquire lock2
     pthread_mutex_lock(&lock2);
     pthread_mutex_unlock(&lock2);
     pthread_mutex_unlock(&lock1);
@@ -24,14 +24,14 @@ void *workOne(void *arg) {
 
 void *workTwo(void *arg) {
     pthread_mutex_lock(&lock2);
-    usleep(2000);
-    pthread_mutex_lock(&lock1);
+    usleep(2000);   // give thread1 time to acquire lock1
+    pthread_mutex_lock(&lock1);     // deadlock here
     pthread_mutex_unlock(&lock1);
     pthread_mutex_unlock(&lock2);
     return arg;
 }
 
-int main(int argc, char *argv[]) {
+int main() {
     int ret;
 
     ret = pthread_mutex_init(&lock1, 0);
