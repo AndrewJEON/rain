@@ -115,6 +115,9 @@ static void init_real_pthreads() {
 }
 
 static void sigprof_handler(int sig_nr, siginfo_t* info, void *context) {
+    (void)sig_nr;
+    (void)info;
+    (void)context;
     /*
     // to block SIGPROF while handling it:
     sigset_t block_set;
@@ -144,6 +147,7 @@ static void sigprof_handler(int sig_nr, siginfo_t* info, void *context) {
 }
 
 static void sigusr1_handler(int sig_nr, siginfo_t* info, void *context) {
+    (void)sig_nr;
     unsigned int t = info->si_value.sival_int;
 
     // instead of just counting signals received by a thread, also check
@@ -282,7 +286,7 @@ void pthread_exit(void *value_ptr) {
     real_pthread_exit(value_ptr);
 }
 
-static bool deadlockDetectRecur(int thread, pthread_mutex_t *mutex, int threadRequesting) {
+static bool deadlockDetectRecur(int threadRequesting, pthread_mutex_t *mutex) {
     if (lockHolders.count(mutex) == 0) {
         return 0;   // no thread currently holding this lock
     }
@@ -297,12 +301,12 @@ static bool deadlockDetectRecur(int thread, pthread_mutex_t *mutex, int threadRe
     if (threadWaiters.count(holder) == 0) {
         return 0;   // holder is not waiting on any locks
     }
-    return deadlockDetectRecur(holder, threadWaiters[holder], threadRequesting);
+    return deadlockDetectRecur(threadRequesting, threadWaiters[holder]);
 }
 
 // returns 1 if given thread trying to acquire given mutex creates a deadlock, else 0
 static bool deadlockDetect(int thread, pthread_mutex_t *mutex) {
-    return deadlockDetectRecur(thread, mutex, thread);
+    return deadlockDetectRecur(thread, mutex);
 }
 
 int pthread_mutex_lock(pthread_mutex_t *mutex) {

@@ -1,8 +1,8 @@
 example tests:
-./rain ./inbalanced_sum 4 7
-./rain ./many_threads_unbalanced
-./rain ./deadlock
-./rain ./nodeadlock
+./rain ./tests/two_threads_unbalanced 4 7
+./rain ./tests/many_threads_unbalanced
+./rain ./tests/deadlock
+./rain ./tests/nodeadlock
 
-inbalanced_sum takes two arguments which correspond to how long two threads should run in seconds
+two_threads_unbalanced takes two arguments which correspond to how long two threads should run in seconds
 many_threads_unbalanced takes no arguments and spawns two threads to spawn worker threads which run for random number of seconds
