@@ -48,6 +48,7 @@ static __thread bool disableRain = false;
 
 static std::atomic_flag real_pthread_initialized = ATOMIC_FLAG_INIT;    // pthread functions initialized?
 static pthread_mutex_t rain_lock = PTHREAD_MUTEX_INITIALIZER;         // lock for internal operations
+static bool function_wrappers_initialized = false;
 
 // need to be able to call the actual pthread library functions
 static int (*real_pthread_create)(pthread_t*, const pthread_attr_t*, 
@@ -105,13 +106,7 @@ static void init_real_pthreads() {
     WRAP_FUNCTION(pthread_exit);
     WRAP_FUNCTION(pthread_mutex_lock);
     WRAP_FUNCTION(pthread_mutex_unlock);
-
-    // gcc 4.9 has a bug with unordered_map that causes a floating point exception
-    // reserve here as a workaround to prevent it
-    // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61143
-    lockHolders.reserve(1);
-    threadWaiters.reserve(1);
-    mutexData.reserve(1);
+    function_wrappers_initialized = true;
 }
 
 static void sigprof_handler(int sig_nr, siginfo_t* info, void *context) {
@@ -168,6 +163,13 @@ static void sigusr1_handler(int sig_nr, siginfo_t* info, void *context) {
 
 // called just before first thread is created
 static void begin() {
+    // gcc 4.9 has a bug with unordered_map that causes a floating point exception
+    // reserve here as a workaround to prevent it
+    // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61143
+    lockHolders.reserve(1);
+    threadWaiters.reserve(1);
+    mutexData.reserve(1);
+
     totalThreadCount = 0;
     clientThreads.clear();
     sigCounts.clear();
@@ -223,6 +225,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
+    while (!function_wrappers_initialized);
     // lock this all up in case of threads creating threads
     int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
@@ -235,11 +238,11 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     }
     int ret = real_pthread_create(thread, attr, start_routine, arg);
     clientThreads.push_back(thread);
-    ++totalThreadCount;
 
     RegSet initRegSet;
     lastRegSet.push_back(initRegSet);
     sigCounts.push_back(0);
+    ++totalThreadCount;
 
     res = real_pthread_mutex_unlock(&rain_lock);
     if (res) {
@@ -254,6 +257,7 @@ int pthread_join(pthread_t thread, void **value_ptr) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
+    while (!function_wrappers_initialized);
     int ret = real_pthread_join(thread, value_ptr);
     int res = real_pthread_mutex_lock(&rain_lock);
     if (res) {
@@ -283,6 +287,7 @@ void pthread_exit(void *value_ptr) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
+    while (!function_wrappers_initialized);
     real_pthread_exit(value_ptr);
 }
 
@@ -313,6 +318,7 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
+    while (!function_wrappers_initialized);
     if (disableRain) {
         return real_pthread_mutex_lock(mutex);
     }
@@ -388,6 +394,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
     if (!real_pthread_initialized.test_and_set()) {
         init_real_pthreads();
     }
+    while (!function_wrappers_initialized);
     if (disableRain) {
         return real_pthread_mutex_unlock(mutex);
     }
