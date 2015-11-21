@@ -62,7 +62,7 @@ static int (*real_pthread_mutex_unlock)(pthread_mutex_t*) = NULL;
     do {                                                                                \
         /* c++ doesn't support casting void pointers to function pointers, workaround:*/\
         /* http://stackoverflow.com/questions/1096341/function-pointers-casting-in-c*/  \
-        static_assert(sizeof(real_##FUN_NAME), "pointer cast impossible");              \
+        static_assert(sizeof(void*) == sizeof(real_##FUN_NAME), "pointer cast impossible");              \
         *reinterpret_cast<void**>(&real_##FUN_NAME) = dlsym(RTLD_NEXT, #FUN_NAME);      \
         if (real_##FUN_NAME == NULL) {                                                  \
             fprintf(stderr, "ERROR: RAIN: #FUN_NAME, dlsym: %s\n", dlerror());          \

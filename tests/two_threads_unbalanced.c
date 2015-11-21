@@ -48,7 +48,7 @@ void *workTWO(void *arg) {
 }
 
 void printUsage() {
-    fprintf(stderr, "Usage: ./inbalanced_sum <thread1_work_secs> <thread2_work_secs>\n");
+    fprintf(stderr, "Usage: ./two_threads_unbalanced <thread1_work_secs> <thread2_work_secs>\n");
 }
 
 int main(int argc, char *argv[]) {
